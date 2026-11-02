@@ -1,15 +1,15 @@
 import React, { useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { Sparkles, Mail, Lock, User, AlertCircle, ArrowRight } from 'lucide-react';
 import { Button } from '../components/common/Button';
 import { Card } from '../components/common/Card';
 import { Navbar } from '../components/common/Navbar';
 
-
 export const SignupPage = () => {
-  const { signup, loginWithGoogle } = useAuth();
+  const { currentUser, signup, loginWithGoogle, logout } = useAuth();
   const navigate = useNavigate();
+  const location = useLocation();
 
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
@@ -17,6 +17,8 @@ export const SignupPage = () => {
   const [confirmPassword, setConfirmPassword] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+
+  const redirectDestination = location.state?.from?.pathname || '/dashboard';
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -40,10 +42,16 @@ export const SignupPage = () => {
     try {
       setLoading(true);
       await signup(email, password, name);
-      navigate('/profile');
+      navigate(redirectDestination, { replace: true });
     } catch (err) {
       console.error(err);
-      setError(err.message || 'Failed to create account.');
+      if (err?.code === 'auth/configuration-not-found' || err?.message?.includes('configuration-not-found')) {
+        setError('Firebase Authentication is not yet enabled in your Firebase Console for project skillix-5e896. Please enable Email/Password under Firebase Console > Authentication > Sign-in method.');
+      } else if (err?.code === 'auth/email-already-in-use') {
+        setError('An account with this email address already exists. Please log in instead.');
+      } else {
+        setError(err.message || 'Failed to create account.');
+      }
     } finally {
       setLoading(false);
     }
@@ -54,10 +62,14 @@ export const SignupPage = () => {
       setLoading(true);
       setError('');
       await loginWithGoogle();
-      navigate('/profile');
+      navigate(redirectDestination, { replace: true });
     } catch (err) {
       console.error(err);
-      setError('Google signup failed.');
+      if (err?.code === 'auth/configuration-not-found' || err?.message?.includes('configuration-not-found')) {
+        setError('Google Sign-in is not yet enabled in your Firebase Console. Please enable Google under Firebase Console > Authentication > Sign-in method.');
+      } else {
+        setError('Google signup failed: ' + (err.message || 'Please try again.'));
+      }
     } finally {
       setLoading(false);
     }
@@ -65,23 +77,44 @@ export const SignupPage = () => {
 
   return (
     <div className="min-h-screen bg-slate-50 flex flex-col font-sans">
-      <Navbar />
+      <Navbar publicOnly={true} />
 
       <main className="flex-1 flex items-center justify-center p-4 sm:p-6 md:p-8">
-        <Card className="w-full max-w-md p-6 sm:p-8 shadow-xl border-slate-200">
+        <Card className="w-full max-w-md p-6 sm:p-8 shadow-sm border border-slate-200/90 bg-white">
           
           <div className="text-center mb-6">
-            <div className="w-12 h-12 rounded-2xl gradient-bg mx-auto flex items-center justify-center text-white shadow-md mb-3">
-              <Sparkles className="w-6 h-6" />
+            <div className="w-10 h-10 rounded-xl bg-indigo-600 mx-auto flex items-center justify-center text-white shadow-xs mb-3">
+              <Sparkles className="w-5 h-5" />
             </div>
-            <h1 className="text-2xl font-extrabold text-slate-900 tracking-tight">Create Free Account</h1>
-            <p className="text-xs text-slate-500 mt-1">Start practicing AI mock interviews in minutes</p>
+            <h1 className="text-2xl font-bold text-slate-900 tracking-tight">Create Skillix Account</h1>
+            <p className="text-xs text-slate-500 mt-1">Start practicing AI mock interviews and track your progress</p>
           </div>
 
+          {/* If user is already authenticated */}
+          {currentUser && (
+            <div className="mb-5 p-3 rounded-xl bg-indigo-50/70 border border-indigo-100 text-xs text-indigo-900 flex items-center justify-between">
+              <div>
+                <span>Signed in as <strong>{currentUser.email}</strong></span>
+              </div>
+              <div className="flex items-center gap-2">
+                <Link to="/dashboard" className="font-semibold text-indigo-700 hover:underline">
+                  Dashboard &rarr;
+                </Link>
+                <button
+                  type="button"
+                  onClick={logout}
+                  className="text-rose-600 font-medium hover:underline ml-2"
+                >
+                  Sign Out
+                </button>
+              </div>
+            </div>
+          )}
+
           {error && (
-            <div className="mb-5 p-3.5 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 text-xs flex items-center gap-2">
-              <AlertCircle className="w-4 h-4 shrink-0" />
-              <span>{error}</span>
+            <div className="mb-5 p-3.5 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 text-xs flex items-start gap-2">
+              <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+              <span className="leading-relaxed">{error}</span>
             </div>
           )}
 
@@ -150,7 +183,7 @@ export const SignupPage = () => {
               type="submit"
               size="lg"
               isLoading={loading}
-              className="w-full mt-2"
+              className="w-full mt-2 bg-indigo-600 hover:bg-indigo-700 text-white"
               icon={ArrowRight}
             >
               Create Skillix Account

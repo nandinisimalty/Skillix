@@ -43,37 +43,16 @@ export const demoStorage = {
   getInterviews: () => {
     try {
       const saved = localStorage.getItem(STORAGE_KEYS.INTERVIEWS);
-      if (saved) return JSON.parse(saved);
+      if (saved) {
+        const interviews = JSON.parse(saved);
+        return Array.isArray(interviews)
+          ? interviews.filter((interview) => interview?.id !== 'int_sample_101')
+          : [];
+      }
     } catch (e) {
       console.error(e);
     }
-    // Return standard initial sample interview so the dashboard is interactive out of the box
-    return [
-      {
-        id: 'int_sample_101',
-        targetRole: 'Software Engineer',
-        interviewType: 'Technical',
-        difficulty: 'Medium',
-        createdAt: new Date(Date.now() - 86400000 * 2).toISOString(),
-        overallScore: 84,
-        questionsCount: 5,
-        questions: [
-          { question: "Explain RESTful API design principles." },
-          { question: "Difference between SQL and NoSQL databases?" },
-          { question: "What is Time Complexity and Big-O notation?" },
-          { question: "How does asynchronous execution work in JavaScript/FastAPI?" },
-          { question: "Explain database indexing trade-offs." }
-        ],
-        answers: ["REST APIs use standard HTTP verbs...", "SQL is relational with fixed schema...", "Big-O measures algorithm efficiency...", "Async code uses non-blocking event loops...", "Indexes speed up read operations but slow writes..."],
-        feedback: [
-          { score: 85, what_went_well: ["Good HTTP verb explanation"], what_is_missing: ["Mention status codes"], better_answer_example: "Use standard URIs..." },
-          { score: 90, what_went_well: ["Great SQL vs NoSQL comparison"], what_is_missing: ["ACID compliance"], better_answer_example: "Relational tables..." },
-          { score: 80, what_went_well: ["Clear Big-O definition"], what_is_missing: ["Space complexity details"], better_answer_example: "O(1) vs O(n)..." },
-          { score: 85, what_went_well: ["Clear event loop overview"], what_is_missing: ["Thread pool details"], better_answer_example: "Async/await patterns..." },
-          { score: 80, what_went_well: ["Accurate read vs write tradeoff"], what_is_missing: ["B-Tree explanation"], better_answer_example: "Index maintenance..." }
-        ]
-      }
-    ];
+    return [];
   },
   saveInterview: (interviewObj) => {
     try {

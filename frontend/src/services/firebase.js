@@ -35,14 +35,17 @@ const firebaseConfig = {
 export const isFirebaseConfigured = Boolean(
   firebaseConfig.apiKey && 
   firebaseConfig.apiKey !== "your_firebase_api_key" &&
+  firebaseConfig.authDomain &&
   firebaseConfig.projectId &&
-  firebaseConfig.projectId !== "your_project_id"
+  firebaseConfig.projectId !== "your_project_id" &&
+  firebaseConfig.appId
 );
 
 let app = null;
 let auth = null;
 let db = null;
 let googleProvider = null;
+let firebaseInitializationError = null;
 
 if (isFirebaseConfigured) {
   try {
@@ -55,9 +58,14 @@ if (isFirebaseConfigured) {
     db = getFirestore(app);
     googleProvider = new GoogleAuthProvider();
   } catch (err) {
-    console.warn("Firebase failed to initialize with provided config. Switching to Demo Mode:", err);
+    console.warn("Firebase failed to initialize with the provided config:", err);
+    firebaseInitializationError = err instanceof Error
+      ? err.message
+      : 'Firebase initialization failed.';
   }
 }
+
+export { firebaseInitializationError };
 
 export { 
   auth, 

@@ -1,17 +1,21 @@
 import React from 'react';
-import { Navigate } from 'react-router-dom';
+import { Navigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
 import { LoadingSpinner } from '../common/LoadingSpinner';
 
 export const ProtectedRoute = ({ children }) => {
-  const { currentUser, loading } = useAuth();
+  const { currentUser, loading, authLoading } = useAuth();
+  const location = useLocation();
 
-  if (loading) {
+  const isCheckingAuth = authLoading !== undefined ? authLoading : loading;
+
+  if (isCheckingAuth) {
     return <LoadingSpinner message="Checking authentication..." fullPage />;
   }
 
   if (!currentUser) {
-    return <Navigate to="/login" replace />;
+    // Redirect to login while saving the intended location
+    return <Navigate to="/login" state={{ from: location }} replace />;
   }
 
   return children;

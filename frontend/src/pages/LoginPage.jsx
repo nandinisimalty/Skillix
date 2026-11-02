@@ -1,15 +1,15 @@
 import React, { useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { Sparkles, Mail, Lock, AlertCircle, ArrowRight, CheckCircle2 } from 'lucide-react';
 import { Button } from '../components/common/Button';
 import { Card } from '../components/common/Card';
 import { Navbar } from '../components/common/Navbar';
 
-
 export const LoginPage = () => {
-  const { login, loginWithGoogle, resetPassword } = useAuth();
+  const { currentUser, login, loginWithGoogle, resetPassword, logout } = useAuth();
   const navigate = useNavigate();
+  const location = useLocation();
 
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -17,6 +17,8 @@ export const LoginPage = () => {
   const [successMsg, setSuccessMsg] = useState('');
   const [loading, setLoading] = useState(false);
   const [showForgot, setShowForgot] = useState(false);
+
+  const redirectDestination = location.state?.from?.pathname || '/dashboard';
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -31,10 +33,16 @@ export const LoginPage = () => {
     try {
       setLoading(true);
       await login(email, password);
-      navigate('/dashboard');
+      navigate(redirectDestination, { replace: true });
     } catch (err) {
       console.error(err);
-      setError(err.message || 'Failed to log in. Please check your credentials.');
+      if (err?.code === 'auth/configuration-not-found' || err?.message?.includes('configuration-not-found')) {
+        setError('Firebase Authentication is not yet enabled in your Firebase Console for project skillix-5e896. Please enable Email/Password under Firebase Console > Authentication > Sign-in method.');
+      } else if (err?.code === 'auth/user-not-found' || err?.code === 'auth/wrong-password' || err?.code === 'auth/invalid-credential') {
+        setError('Invalid email or password. Please verify your credentials or create a new account.');
+      } else {
+        setError(err.message || 'Failed to log in. Please check your credentials.');
+      }
     } finally {
       setLoading(false);
     }
@@ -45,10 +53,14 @@ export const LoginPage = () => {
       setLoading(true);
       setError('');
       await loginWithGoogle();
-      navigate('/dashboard');
+      navigate(redirectDestination, { replace: true });
     } catch (err) {
       console.error(err);
-      setError('Google login failed. Continuing in demo mode.');
+      if (err?.code === 'auth/configuration-not-found' || err?.message?.includes('configuration-not-found')) {
+        setError('Google Sign-in is not yet enabled in your Firebase Console. Please enable Google under Firebase Console > Authentication > Sign-in method.');
+      } else {
+        setError('Google login failed: ' + (err.message || 'Please try again.'));
+      }
     } finally {
       setLoading(false);
     }
@@ -57,16 +69,17 @@ export const LoginPage = () => {
   const handleForgotPassword = async (e) => {
     e.preventDefault();
     if (!email) {
-      setError('Please enter your email address to reset password.');
+      setError('Please enter your email address above to receive a password reset link.');
       return;
     }
     try {
       setLoading(true);
+      setError('');
       await resetPassword(email);
-      setSuccessMsg('Password reset email sent! Please check your inbox.');
+      setSuccessMsg('Password reset link sent to your email address.');
       setShowForgot(false);
     } catch (err) {
-      setError('Failed to send reset email: ' + err.message);
+      setError('Failed to send reset email: ' + (err.message || 'Check the email entered.'));
     } finally {
       setLoading(false);
     }
@@ -74,23 +87,44 @@ export const LoginPage = () => {
 
   return (
     <div className="min-h-screen bg-slate-50 flex flex-col font-sans">
-      <Navbar />
+      <Navbar publicOnly={true} />
 
       <main className="flex-1 flex items-center justify-center p-4 sm:p-6 md:p-8">
-        <Card className="w-full max-w-md p-6 sm:p-8 shadow-xl border-slate-200">
+        <Card className="w-full max-w-md p-6 sm:p-8 shadow-sm border border-slate-200/90 bg-white">
           
           <div className="text-center mb-6">
-            <div className="w-12 h-12 rounded-2xl gradient-bg mx-auto flex items-center justify-center text-white shadow-md mb-3">
-              <Sparkles className="w-6 h-6" />
+            <div className="w-10 h-10 rounded-xl bg-indigo-600 mx-auto flex items-center justify-center text-white shadow-xs mb-3">
+              <Sparkles className="w-5 h-5" />
             </div>
-            <h1 className="text-2xl font-extrabold text-slate-900 tracking-tight">Welcome Back</h1>
-            <p className="text-xs text-slate-500 mt-1">Log in to your Skillix account to continue practicing</p>
+            <h1 className="text-2xl font-bold text-slate-900 tracking-tight">Log In to Skillix</h1>
+            <p className="text-xs text-slate-500 mt-1">Access your personalized interview coaching dashboard</p>
           </div>
 
+          {/* If user is already authenticated, show an informative banner instead of blocking navigation */}
+          {currentUser && (
+            <div className="mb-5 p-3 rounded-xl bg-indigo-50/70 border border-indigo-100 text-xs text-indigo-900 flex items-center justify-between">
+              <div>
+                <span>Signed in as <strong>{currentUser.email}</strong></span>
+              </div>
+              <div className="flex items-center gap-2">
+                <Link to="/dashboard" className="font-semibold text-indigo-700 hover:underline">
+                  Dashboard &rarr;
+                </Link>
+                <button
+                  type="button"
+                  onClick={logout}
+                  className="text-rose-600 font-medium hover:underline ml-2"
+                >
+                  Sign Out
+                </button>
+              </div>
+            </div>
+          )}
+
           {error && (
-            <div className="mb-5 p-3.5 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 text-xs flex items-center gap-2">
-              <AlertCircle className="w-4 h-4 shrink-0" />
-              <span>{error}</span>
+            <div className="mb-5 p-3.5 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 text-xs flex items-start gap-2">
+              <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+              <span className="leading-relaxed">{error}</span>
             </div>
           )}
 
@@ -143,7 +177,7 @@ export const LoginPage = () => {
 
             {showForgot && (
               <div className="p-3 bg-indigo-50/70 border border-indigo-100 rounded-xl space-y-2">
-                <p className="text-xs text-indigo-900 font-medium">Enter your email above and click send to reset:</p>
+                <p className="text-xs text-indigo-900 font-medium">Enter your email above and click below to reset:</p>
                 <Button size="sm" variant="secondary" onClick={handleForgotPassword} isLoading={loading}>
                   Send Password Reset Link
                 </Button>
@@ -154,7 +188,7 @@ export const LoginPage = () => {
               type="submit"
               size="lg"
               isLoading={loading}
-              className="w-full mt-2"
+              className="w-full mt-2 bg-indigo-600 hover:bg-indigo-700 text-white"
               icon={ArrowRight}
             >
               Log In

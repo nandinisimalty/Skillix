@@ -77,7 +77,7 @@ export const ProfilePage = () => {
 
     try {
       setLoading(true);
-      await updateProfileData({
+      const result = await updateProfileData({
         name,
         college,
         degree,
@@ -87,10 +87,17 @@ export const ProfilePage = () => {
         experienceLevel,
         updatedAt: new Date().toISOString()
       });
-      setMessage({ type: 'success', text: 'Profile saved successfully!' });
-      setTimeout(() => {
-        navigate('/dashboard');
-      }, 1200);
+      if (result.syncedToFirestore) {
+        setMessage({ type: 'success', text: 'Profile saved successfully to your account.' });
+        setTimeout(() => {
+          navigate('/dashboard');
+        }, 1200);
+      } else {
+        setMessage({
+          type: 'warning',
+          text: 'Saved on this device only. Restore Firestore connectivity and save again to sync to your account.'
+        });
+      }
     } catch (err) {
       console.error(err);
       setMessage({ type: 'error', text: 'Failed to update profile.' });
@@ -129,9 +136,15 @@ export const ProfilePage = () => {
 
         {message.text && (
           <div className={`mb-6 p-4 rounded-xl border text-sm flex items-center gap-2.5 ${
-            message.type === 'success' ? 'bg-emerald-50 border-emerald-200 text-emerald-800' : 'bg-rose-50 border-rose-200 text-rose-800'
+            message.type === 'success'
+              ? 'bg-emerald-50 border-emerald-200 text-emerald-800'
+              : message.type === 'warning'
+                ? 'bg-amber-50 border-amber-200 text-amber-900'
+                : 'bg-rose-50 border-rose-200 text-rose-800'
           }`}>
-            {message.type === 'success' ? <CheckCircle2 className="w-5 h-5 text-emerald-600 shrink-0" /> : <AlertCircle className="w-5 h-5 text-rose-600 shrink-0" />}
+            {message.type === 'success'
+              ? <CheckCircle2 className="w-5 h-5 text-emerald-600 shrink-0" />
+              : <AlertCircle className={`w-5 h-5 shrink-0 ${message.type === 'warning' ? 'text-amber-600' : 'text-rose-600'}`} />}
             <span>{message.text}</span>
           </div>
         )}

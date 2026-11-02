@@ -1,13 +1,13 @@
 from pydantic import BaseModel, Field
-from typing import List, Optional
+from typing import List, Literal, Optional
 
 class QuestionGenerationRequest(BaseModel):
-    target_role: str = "Software Engineer"
-    interview_type: str = "Technical" # Technical, HR, Mixed
-    difficulty: str = "Medium" # Easy, Medium, Hard
-    num_questions: int = 5
-    topics: List[str] = Field(default_factory=list)
-    resume_context: Optional[str] = None
+    target_role: str = Field(default="Software Engineer", min_length=1, max_length=120)
+    interview_type: Literal["Technical", "HR", "Mixed"] = "Technical"
+    difficulty: Literal["Easy", "Medium", "Hard"] = "Medium"
+    num_questions: int = Field(default=5, ge=1, le=10)
+    topics: List[str] = Field(default_factory=list, max_length=20)
+    resume_context: Optional[str] = Field(default=None, max_length=10000)
 
 class QuestionItem(BaseModel):
     id: int
@@ -24,19 +24,24 @@ class QuestionsResponse(BaseModel):
     is_mock_response: bool = False
 
 class AnswerEvaluationRequest(BaseModel):
-    target_role: str = "Software Engineer"
-    interview_type: str = "Technical"
-    question: str
-    user_answer: str
+    target_role: str = Field(default="Software Engineer", min_length=1, max_length=120)
+    interview_type: Literal["Technical", "HR", "Mixed"] = "Technical"
+    difficulty: Literal["Easy", "Medium", "Hard"] = "Medium"
+    question: str = Field(min_length=1, max_length=3000)
+    user_answer: str = Field(min_length=1, max_length=10000)
     topic: Optional[str] = None
     question_index: Optional[int] = 0
 
 class AnswerEvaluationResponse(BaseModel):
-    score: int = Field(ge=0, le=100)          # 0-100
-    verdict: str                               # e.g. "Correct", "Mostly Correct", "Partially Correct", "Incorrect"
+    score: int = Field(ge=0, le=100)
+    max_score: int = Field(default=100, ge=1)
+    percentage: float = Field(ge=0, le=100)
+    verdict: Literal["Correct", "Mostly Correct", "Partially Correct", "Incorrect"]
     what_was_correct: List[str] = Field(default_factory=list)
     what_was_wrong: List[str] = Field(default_factory=list)
     missing_concepts: List[str] = Field(default_factory=list)
-    explanation: str = ""
-    improved_answer: str = ""
+    concept_explanation: str = Field(min_length=1)
+    suggestions: List[str] = Field(min_length=1)
+    explanation: str = Field(min_length=1)
+    improved_answer: str = Field(min_length=1)
     is_mock_response: bool = False

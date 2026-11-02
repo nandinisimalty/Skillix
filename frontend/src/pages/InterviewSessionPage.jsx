@@ -1,20 +1,17 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { apiService } from '../services/api';
 import { demoStorage } from '../services/demoData';
 import { 
-  BrainCircuit, 
   Sparkles, 
   CheckCircle2, 
   AlertCircle, 
-  HelpCircle, 
   Lightbulb, 
   ArrowRight, 
   Send, 
   StopCircle, 
   ThumbsUp, 
   AlertTriangle,
-  Award,
   ChevronRight
 } from 'lucide-react';
 import { Button } from '../components/common/Button';
@@ -41,6 +38,8 @@ const normalizeEvaluationData = (value) => {
 
   return {
     score,
+    max_score: Number.isFinite(Number(value.max_score)) ? Number(value.max_score) : 100,
+    percentage: Number.isFinite(Number(value.percentage)) ? Number(value.percentage) : score,
     verdict,
     what_was_correct: Array.isArray(value.what_was_correct)
       ? value.what_was_correct.filter(Boolean)
@@ -53,25 +52,31 @@ const normalizeEvaluationData = (value) => {
         ? value.what_is_missing.filter(Boolean)
         : [],
     missing_concepts: Array.isArray(value.missing_concepts) ? value.missing_concepts.filter(Boolean) : [],
+    concept_explanation: value.concept_explanation || '',
+    suggestions: Array.isArray(value.suggestions) ? value.suggestions.filter(Boolean) : [],
     explanation: value.explanation || value.summary || 'No detailed explanation was provided for this evaluation.',
-    improved_answer: value.improved_answer || value.better_answer_example || 'A stronger answer would explain the core idea clearly and include a concrete example.',
+    improved_answer: value.improved_answer || value.better_answer_example || '',
     is_mock_response: Boolean(value.is_mock_response)
   };
+};
+
+const DEFAULT_CONFIG = {
+  targetRole: 'Software Engineer',
+  interviewType: 'Technical',
+  difficulty: 'Medium',
+  numQuestions: 5,
+  topics: ['Python', 'SQL', 'Data Structures']
 };
 
 export const InterviewSessionPage = () => {
   const location = useLocation();
   const navigate = useNavigate();
 
-  const config = location.state || {
-    targetRole: 'Software Engineer',
-    interviewType: 'Technical',
-    difficulty: 'Medium',
-    numQuestions: 5,
-    topics: ['Python', 'SQL', 'Data Structures']
-  };
+  const config = location.state || DEFAULT_CONFIG;
 
   const [loadingQuestions, setLoadingQuestions] = useState(true);
+  const [questionError, setQuestionError] = useState('');
+  const [questionAttempt, setQuestionAttempt] = useState(0);
   const [questions, setQuestions] = useState([]);
   const [currentIndex, setCurrentIndex] = useState(0);
 
@@ -82,13 +87,15 @@ export const InterviewSessionPage = () => {
   const [evaluating, setEvaluating] = useState(false);
   const [showHints, setShowHints] = useState(false);
   const [error, setError] = useState('');
+  const hasFinished = useRef(false);
 
-  // Fetch AI generated questions on mount
+  // Fetch AI-generated questions on mount and when the user explicitly retries.
   useEffect(() => {
     let isMounted = true;
     const loadQuestions = async () => {
       try {
         setLoadingQuestions(true);
+        setQuestionError('');
         const res = await apiService.generateQuestions({
           targetRole: config.targetRole,
           interviewType: config.interviewType,
@@ -97,12 +104,13 @@ export const InterviewSessionPage = () => {
           topics: config.topics
         });
         if (isMounted) {
-          setQuestions(res.questions || []);
+          setQuestions(res.questions);
         }
       } catch (err) {
-        console.error("Error loading questions", err);
+        console.error('Interview question generation failed:', err);
         if (isMounted) {
-          setError("Failed to generate AI questions. Please try again.");
+          setQuestions([]);
+          setQuestionError(err instanceof Error ? err.message : 'Could not generate interview questions.');
         }
       } finally {
         if (isMounted) setLoadingQuestions(false);
@@ -110,7 +118,7 @@ export const InterviewSessionPage = () => {
     };
     loadQuestions();
     return () => { isMounted = false; };
-  }, []);
+  }, [config, questionAttempt]);
 
   const currentQ = questions[currentIndex];
 
@@ -124,23 +132,26 @@ export const InterviewSessionPage = () => {
     try {
       setEvaluating(true);
       setError('');
-      setEvaluations((prev) => ({ ...prev, [currentIndex]: null }));
+      setAnswers((prev) => ({ ...prev, [currentIndex]: currentAnswerText }));
 
       const evalRes = await apiService.evaluateAnswer({
         targetRole: config.targetRole,
         interviewType: config.interviewType,
+        difficulty: config.difficulty,
         question: currentQ.question,
         userAnswer: currentAnswerText,
-        questionIndex: currentIndex
+        questionIndex: currentIndex,
+        topic: currentQ.category
       });
 
       const normalizedEval = normalizeEvaluationData(evalRes);
 
       setAnswers((prev) => ({ ...prev, [currentIndex]: currentAnswerText }));
       setEvaluations((prev) => ({ ...prev, [currentIndex]: normalizedEval }));
+      setError('');
     } catch (err) {
-      console.error(err);
-      setError('Gemini evaluation is unavailable right now. Your submitted answer is still saved, and you can retry without losing it.');
+      console.error('Answer evaluation failed:', err);
+      setError(err instanceof Error ? err.message : 'Answer evaluation failed. Your answer is preserved; retry when the backend is available.');
     } finally {
       setEvaluating(false);
     }
@@ -159,18 +170,16 @@ export const InterviewSessionPage = () => {
   };
 
   const finishInterview = () => {
+    if (hasFinished.current) return;
+    hasFinished.current = true;
+
     // Compile final interview report
     const finalAnswers = questions.map((q, idx) => answers[idx] || 'No answer provided.');
-    const finalFeedback = questions.map((q, idx) => evaluations[idx] || {
-      score: 50,
-      what_went_well: ["Submitted response"],
-      what_is_missing: ["Detailed answer elaboration"],
-      areas_for_improvement: ["Provide complete answer text"],
-      better_answer_example: "Provide full context."
-    });
-
-    const scores = finalFeedback.map((f) => f.score || 0);
-    const overallScore = Math.round(scores.reduce((a, b) => a + b, 0) / (scores.length || 1));
+    const finalFeedback = questions.map((q, idx) => evaluations[idx] || null);
+    const scores = finalFeedback.filter(Boolean).map((feedback) => feedback.score);
+    const overallScore = scores.length
+      ? Math.round(scores.reduce((total, score) => total + score, 0) / scores.length)
+      : null;
 
     const reportData = {
       targetRole: config.targetRole,
@@ -196,6 +205,35 @@ export const InterviewSessionPage = () => {
         <Navbar />
         <main className="flex-1 flex items-center justify-center">
           <LoadingSpinner message={`Generating ${config.numQuestions} ${config.difficulty} ${config.interviewType} questions with Gemini AI...`} fullPage />
+        </main>
+      </div>
+    );
+  }
+
+  if (questionError) {
+    return (
+      <div className="min-h-screen bg-slate-50 flex flex-col font-sans">
+        <Navbar />
+        <main className="flex-1 max-w-3xl mx-auto w-full px-4 sm:px-6 py-12">
+          <Card className="p-8 text-center space-y-4">
+            <AlertCircle className="w-10 h-10 text-rose-600 mx-auto" />
+            <h1 className="text-xl font-bold text-slate-900">Could not generate interview questions</h1>
+            <p className="text-sm text-slate-600">{questionError}</p>
+            <p className="text-xs text-slate-500">
+              No demo questions were substituted. Check the backend and Gemini configuration, then retry.
+            </p>
+            <div className="flex justify-center">
+              <Button
+                icon={Send}
+                onClick={() => {
+                  setLoadingQuestions(true);
+                  setQuestionAttempt((attempt) => attempt + 1);
+                }}
+              >
+                Retry question generation
+              </Button>
+            </div>
+          </Card>
         </main>
       </div>
     );
@@ -292,7 +330,15 @@ export const InterviewSessionPage = () => {
                 <textarea
                   rows={6}
                   value={currentAnswerText}
-                  onChange={(e) => setCurrentAnswerText(e.target.value)}
+                  onChange={(e) => {
+                    setCurrentAnswerText(e.target.value);
+                    setEvaluations((previous) => {
+                      if (!previous[currentIndex]) return previous;
+                      const updated = { ...previous };
+                      delete updated[currentIndex];
+                      return updated;
+                    });
+                  }}
                   placeholder="Explain your approach, technical details, code structure, or STAR situation..."
                   className="w-full p-4 text-sm bg-slate-50 border border-slate-300 rounded-2xl focus:ring-2 focus:ring-indigo-500 focus:bg-white focus:outline-none transition-all leading-relaxed"
                 />
@@ -346,7 +392,7 @@ export const InterviewSessionPage = () => {
           <Card className="p-6 border-indigo-200 bg-gradient-to-b from-white to-indigo-50/20 space-y-5 shadow-lg animate-pulse-subtle">
             {currentEval.is_mock_response && (
               <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
-                This is a local fallback evaluation because the Gemini API is not configured. Add the API key to enable live answer scoring.
+                ⚡ This is a local offline evaluation — the AI backend is not running. Start the backend server (<code className="font-mono">python -m uvicorn app.main:app --reload</code> in <code className="font-mono">/backend</code>) with a valid Gemini API key to receive real AI-powered scoring.
               </div>
             )}
 
@@ -357,14 +403,17 @@ export const InterviewSessionPage = () => {
                 </div>
                 <div>
                   <h4 className="font-bold text-slate-900 text-base">AI Interview Evaluation</h4>
-                  <p className="text-xs text-slate-500">Scored out of 100</p>
+                  <p className="text-xs text-slate-500">
+                    {currentEval.score} / {currentEval.max_score} marks
+                  </p>
                 </div>
               </div>
 
-              <div className="flex items-center gap-2">
+              <div className="flex flex-col items-end gap-1">
                 <Badge variant={currentEval.score >= 80 ? 'emerald' : currentEval.score >= 65 ? 'indigo' : 'amber'}>
                   {currentEval.verdict}
                 </Badge>
+                <span className="text-xs text-slate-500">{Math.round(currentEval.percentage)}% score</span>
               </div>
             </div>
 
@@ -423,6 +472,24 @@ export const InterviewSessionPage = () => {
               </p>
               <p className="leading-relaxed text-slate-700">{currentEval.explanation}</p>
             </div>
+
+            {currentEval.concept_explanation && (
+              <div className="p-4 rounded-xl bg-sky-50 border border-sky-200 text-xs text-slate-700 space-y-2">
+                <p className="font-bold text-sky-900">Concept Explanation:</p>
+                <p className="leading-relaxed">{currentEval.concept_explanation}</p>
+              </div>
+            )}
+
+            {currentEval.suggestions?.length > 0 && (
+              <div className="p-4 rounded-xl bg-emerald-50 border border-emerald-200 text-xs text-slate-700 space-y-2">
+                <p className="font-bold text-emerald-900">Suggestions:</p>
+                <ul className="list-disc list-inside space-y-1">
+                  {currentEval.suggestions.map((suggestion, idx) => (
+                    <li key={idx}>{suggestion}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
 
             {currentEval.improved_answer && (
               <div className="p-4 rounded-xl bg-slate-900 text-slate-200 text-xs space-y-2">

@@ -13,10 +13,26 @@ app = FastAPI(
     version="1.0.0"
 )
 
-# Configure CORS
+# Configure CORS: support exact origins AND any local dev port via allow_origin_regex
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.CORS_ORIGINS,
+    allow_origins=[
+        "http://localhost:5178",
+        "http://127.0.0.1:5178",
+        "http://localhost:5177",
+        "http://127.0.0.1:5177",
+        "http://localhost:5176",
+        "http://127.0.0.1:5176",
+        "http://localhost:5175",
+        "http://127.0.0.1:5175",
+        "http://localhost:5174",
+        "http://127.0.0.1:5174",
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+    ],
+    allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -34,7 +50,16 @@ async def health_check():
         "status": "online",
         "app": "Skillix AI Platform API",
         "gemini_key_configured": bool(settings.GEMINI_API_KEY),
-        "cors_origins": settings.CORS_ORIGINS
+        "cors_origins": [
+            "http://localhost:5178",
+            "http://127.0.0.1:5178",
+            "http://localhost:5177",
+            "http://127.0.0.1:5177",
+            "http://localhost:5176",
+            "http://127.0.0.1:5176",
+            "http://localhost:5173",
+            "http://127.0.0.1:5173",
+        ]
     }
 
 if __name__ == "__main__":

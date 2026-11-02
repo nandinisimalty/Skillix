@@ -1,8 +1,44 @@
 import axios from 'axios';
+import { auth } from './firebase';
 
 const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || (
-  typeof window !== 'undefined' ? window.location.origin : 'http://localhost:8000'
+  import.meta.env.DEV
+    ? 'http://127.0.0.1:8001'
+    : typeof window !== 'undefined' ? window.location.origin : ''
 );
+
+const createApiError = (error, operation) => {
+  if (error?.response) {
+    const { status, data } = error.response;
+    const detail = data?.detail;
+    const message = typeof detail === 'string' ? detail : detail?.message;
+
+    if (detail?.code === 'gemini_configuration_error') {
+      return new Error(message || 'Gemini is not configured correctly on the backend. Check its server-side API key.');
+    }
+    if (typeof detail?.code === 'string' && detail.code.startsWith('gemini_')) {
+      return new Error(message || `Gemini could not ${operation}. Check the backend logs and retry.`);
+    }
+    if (status === 401 || status === 403) {
+      return new Error('Authentication or permission was rejected by the backend. Sign in again and retry.');
+    }
+    if (status === 422) {
+      return new Error(message || 'The backend rejected the request data. Check the interview settings and answer, then retry.');
+    }
+    if (status === 404) {
+      return new Error('The requested API endpoint was not found. Check that the backend version and URL are correct.');
+    }
+    return new Error(message || `The backend returned HTTP ${status} while trying to ${operation}.`);
+  }
+
+  if (error?.request) {
+    return new Error(
+      `Could not reach the backend at ${BACKEND_URL}. Check that it is running and that its CORS origins include this frontend (${window.location.origin}).`
+    );
+  }
+
+  return new Error(error?.message || `Unable to ${operation}. Please retry.`);
+};
 
 const apiClient = axios.create({
   baseURL: BACKEND_URL,
@@ -12,6 +48,21 @@ const apiClient = axios.create({
   timeout: 45000,
 });
 
+// Attach Firebase ID token to outgoing requests if authenticated
+apiClient.interceptors.request.use(async (config) => {
+  try {
+    if (auth?.currentUser) {
+      const token = await auth.currentUser.getIdToken();
+      if (token) {
+        config.headers.Authorization = `Bearer ${token}`;
+      }
+    }
+  } catch {
+    throw new Error('Your Firebase sign-in has expired. Sign in again before retrying this request.');
+  }
+  return config;
+});
+
 export const apiService = {
   // Check backend health
   checkHealth: async () => {
@@ -19,8 +70,7 @@ export const apiService = {
       const response = await apiClient.get('/api/health');
       return response.data;
     } catch (err) {
-      console.warn("Backend API not reachable. Client will operate using resilient fallback mode.", err);
-      return { status: "fallback", gemini_key_configured: false };
+      throw createApiError(err, 'check the backend health');
     }
   },
 
@@ -80,54 +130,64 @@ export const apiService = {
       const response = await apiClient.post('/api/interviews/generate-questions', {
         target_role: targetRole,
         interview_type: interviewType,
-        difficulty: difficulty,
+        difficulty,
         num_questions: numQuestions,
         topics: topics || [],
         resume_context: resumeContext || null
       });
+      if (
+        !Array.isArray(response.data?.questions) ||
+        response.data.questions.length === 0 ||
+        response.data?.is_mock_response !== false
+      ) {
+        throw new Error('The backend returned malformed question data. Retry generation.');
+      }
       return response.data;
     } catch (err) {
-      console.warn("API question generation failed. Serving pre-configured questions.", err);
-      
-      const techPool = [
-        { id: 1, question: `Explain the concept of RESTful API design and how HTTP status codes are used in modern web development.`, category: "Web Architecture", difficulty, hints: ["Mention GET, POST, PUT, DELETE", "Explain 2xx, 4xx, and 5xx status code families"] },
-        { id: 2, question: `What is the difference between SQL and NoSQL databases? When would you select PostgreSQL over MongoDB?`, category: "DBMS", difficulty, hints: ["Discuss ACID compliance vs flexible JSON schema", "Compare relational joins with document embedding"] },
-        { id: 3, question: `What is the difference between synchronous and asynchronous code execution in Node.js or Python FastAPI?`, category: "Async Programming", difficulty, hints: ["Mention event loops, async/await, and non-blocking I/O", "Discuss CPU-bound vs I/O-bound tasks"] },
-        { id: 4, question: `Explain how indexing works in relational databases to improve query performance. What are the trade-offs?`, category: "DBMS", difficulty, hints: ["Mention B-Trees and Hash indexes", "Discuss write overhead during INSERT/UPDATE operations"] },
-        { id: 5, question: `What is Time and Space Complexity? Analyze the Big-O complexity of quicksort vs mergesort.`, category: "Data Structures", difficulty, hints: ["Compare average O(n log n) vs worst case O(n^2)", "Discuss in-place sorting memory footprint"] }
-      ];
-
-      const hrPool = [
-        { id: 1, question: "Tell me about yourself, your background, and why you are interested in this role.", category: "Behavioral", difficulty, hints: ["Use Present-Past-Future structure", "Connect your background directly to target role requirements"] },
-        { id: 2, question: "Describe a situation where you had to meet a tight deadline under pressure.", category: "Situation", difficulty, hints: ["Use the STAR method (Situation, Task, Action, Result)", "Focus on your prioritization strategy"] },
-        { id: 3, question: "How do you handle disagreement or constructive criticism from a team member or mentor?", category: "Teamwork", difficulty, hints: ["Emphasize active listening and open collaboration", "Share a positive outcome"] },
-        { id: 4, question: "What is your greatest technical strength and one area you are working to improve?", category: "Self-Awareness", difficulty, hints: ["Be genuine and show self-awareness", "Highlight concrete steps taken to grow"] },
-        { id: 5, question: "Where do you see your professional career in the next 3 to 5 years?", category: "Career Goals", difficulty, hints: ["Align your personal learning goals with industry growth", "Demonstrate commitment to continuous learning"] }
-      ];
-
-      const pool = interviewType === 'Technical' ? techPool : interviewType === 'HR' ? hrPool : [...techPool.slice(0, 3), ...hrPool.slice(0, 2)];
-      const selected = pool.slice(0, numQuestions).map((q, idx) => ({ ...q, id: idx + 1 }));
-
-      return {
-        target_role: targetRole,
-        interview_type: interviewType,
-        difficulty: difficulty,
-        questions: selected,
-        is_mock_response: true
-      };
+      throw createApiError(err, 'generate interview questions');
     }
   },
 
   // Evaluate Answer
-  evaluateAnswer: async ({ targetRole, interviewType, question, userAnswer, questionIndex }) => {
-    const response = await apiClient.post('/api/interviews/evaluate-answer', {
-      target_role: targetRole,
-      interview_type: interviewType,
-      question: question,
-      user_answer: userAnswer,
-      question_index: questionIndex
-    });
-    return response.data;
+  evaluateAnswer: async ({
+    targetRole,
+    interviewType,
+    difficulty,
+    question,
+    userAnswer,
+    questionIndex,
+    topic
+  }) => {
+    try {
+      const response = await apiClient.post('/api/interviews/evaluate-answer', {
+        target_role: targetRole,
+        interview_type: interviewType,
+        difficulty,
+        question,
+        user_answer: userAnswer,
+        question_index: questionIndex,
+        topic: topic || null
+      });
+      if (
+        !Number.isInteger(response.data?.score) ||
+        !Number.isInteger(response.data?.max_score) ||
+        !Number.isFinite(response.data?.percentage) ||
+        typeof response.data?.verdict !== 'string' ||
+        !Array.isArray(response.data?.what_was_correct) ||
+        !Array.isArray(response.data?.what_was_wrong) ||
+        !Array.isArray(response.data?.missing_concepts) ||
+        !Array.isArray(response.data?.suggestions) ||
+        typeof response.data?.concept_explanation !== 'string' ||
+        typeof response.data?.explanation !== 'string' ||
+        typeof response.data?.improved_answer !== 'string' ||
+        response.data?.is_mock_response !== false
+      ) {
+        throw new Error('The backend returned malformed evaluation data. Your answer was kept; retry evaluation.');
+      }
+      return response.data;
+    } catch (err) {
+      throw createApiError(err, 'evaluate your answer');
+    }
   },
 
   // Generate Study Plan

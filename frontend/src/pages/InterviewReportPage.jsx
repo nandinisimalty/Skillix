@@ -1,17 +1,12 @@
 import React from 'react';
 import { useLocation, useNavigate, Link } from 'react-router-dom';
 import { 
-  Award, 
   Sparkles, 
-  CheckCircle2, 
   AlertTriangle, 
   ThumbsUp, 
-  ArrowRight, 
   RotateCcw, 
   LayoutDashboard,
   BookOpen,
-  HelpCircle,
-  FileCheck
 } from 'lucide-react';
 import { Button } from '../components/common/Button';
 import { Card } from '../components/common/Card';
@@ -19,17 +14,14 @@ import { Badge } from '../components/common/Badge';
 import { Navbar } from '../components/common/Navbar';
 
 const normalizeFeedbackData = (value) => {
-  if (!value || typeof value !== 'object') {
-    return {
-      score: 0,
-      verdict: 'Incorrect',
-      what_was_correct: [],
-      what_was_wrong: [],
-      missing_concepts: [],
-      explanation: 'No evaluation details were available for this question.',
-      improved_answer: '',
-      is_mock_response: true
-    };
+  if (
+    !value ||
+    typeof value !== 'object' ||
+    value.score === null ||
+    value.score === '' ||
+    !Number.isFinite(Number(value.score))
+  ) {
+    return null;
   }
 
   const score = Number.isFinite(Number(value.score)) ? Math.max(0, Math.min(100, Number(value.score))) : 0;
@@ -45,10 +37,14 @@ const normalizeFeedbackData = (value) => {
 
   return {
     score,
+    max_score: Number.isFinite(Number(value.max_score)) ? Number(value.max_score) : 100,
+    percentage: Number.isFinite(Number(value.percentage)) ? Number(value.percentage) : score,
     verdict,
     what_was_correct: Array.isArray(value.what_was_correct) ? value.what_was_correct.filter(Boolean) : Array.isArray(value.what_went_well) ? value.what_went_well.filter(Boolean) : [],
     what_was_wrong: Array.isArray(value.what_was_wrong) ? value.what_was_wrong.filter(Boolean) : Array.isArray(value.what_is_missing) ? value.what_is_missing.filter(Boolean) : [],
     missing_concepts: Array.isArray(value.missing_concepts) ? value.missing_concepts.filter(Boolean) : [],
+    concept_explanation: value.concept_explanation || '',
+    suggestions: Array.isArray(value.suggestions) ? value.suggestions.filter(Boolean) : [],
     explanation: value.explanation || value.summary || 'No explanation was included with this evaluation.',
     improved_answer: value.improved_answer || value.better_answer_example || '',
     is_mock_response: Boolean(value.is_mock_response)
@@ -59,28 +55,33 @@ export const InterviewReportPage = () => {
   const location = useLocation();
   const navigate = useNavigate();
 
-  const report = location.state?.report || {
-    targetRole: 'Software Engineer',
-    interviewType: 'Technical',
-    difficulty: 'Medium',
-    overallScore: 82,
-    questions: [
-      { question: "Explain RESTful API design principles." },
-      { question: "Difference between SQL and NoSQL databases?" }
-    ],
-    answers: ["REST APIs use standard HTTP verbs...", "SQL is relational with fixed schema..."],
-    feedback: [
-      { score: 85, what_went_well: ["Clear HTTP verb explanation"], what_is_missing: ["Status code details"], better_answer_example: "Use standard URIs..." },
-      { score: 80, what_went_well: ["Good schema comparison"], what_is_missing: ["ACID compliance details"], better_answer_example: "Relational tables..." }
-    ],
-    completedAt: new Date().toISOString()
-  };
+  const report = location.state?.report;
+
+  if (!report) {
+    return (
+      <div className="min-h-screen bg-slate-50 flex flex-col font-sans">
+        <Navbar />
+        <main className="flex-1 max-w-3xl mx-auto w-full px-4 sm:px-6 py-12">
+          <Card className="p-8 text-center space-y-4">
+            <h1 className="text-xl font-bold text-slate-900">No interview report to display</h1>
+            <p className="text-sm text-slate-600">Complete an interview to view its saved answers and AI evaluations.</p>
+            <div className="flex justify-center">
+              <Link to="/interview/setup">
+                <Button icon={RotateCcw}>Start an Interview</Button>
+              </Link>
+            </div>
+          </Card>
+        </main>
+      </div>
+    );
+  }
 
   const normalizedFeedback = (report.feedback || []).map(normalizeFeedbackData);
 
   const handleGenerateStudyPlan = () => {
     const weakTopics = [];
     normalizedFeedback.forEach((f) => {
+      if (!f) return;
       if (f.what_was_wrong?.length) {
         weakTopics.push(...f.what_was_wrong);
       }
@@ -120,10 +121,12 @@ export const InterviewReportPage = () => {
           <div className="bg-white/10 backdrop-blur-md p-4 rounded-2xl border border-white/20 text-center min-w-[140px]">
             <span className="text-xs font-bold text-slate-300 uppercase tracking-wider block mb-1">Overall Score</span>
             <div className="text-4xl font-extrabold text-white gradient-text">
-              {report.overallScore}%
+              {report.overallScore === null || report.overallScore === undefined ? '—' : `${report.overallScore}%`}
             </div>
             <span className="text-[10px] text-indigo-200 font-semibold block mt-1">
-              Calculated Average
+              {report.overallScore === null || report.overallScore === undefined
+                ? 'No answers evaluated'
+                : 'Average of evaluated answers'}
             </span>
           </div>
         </div>
@@ -152,15 +155,15 @@ export const InterviewReportPage = () => {
         <div className="space-y-4">
           <h2 className="text-lg font-bold text-slate-900 tracking-tight">Detailed Question Breakdown</h2>
 
-          {normalizedFeedback.some((feedback) => feedback.is_mock_response) && (
+          {normalizedFeedback.some((feedback) => feedback?.is_mock_response) && (
             <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-800">
-              One or more evaluations used local fallback responses because the Gemini API is not configured. Live AI scoring will replace these once the backend key is added.
+              One or more saved evaluations are from a legacy offline demo. They are not Gemini scores.
             </div>
           )}
 
           {report.questions.map((q, idx) => {
             const ans = report.answers[idx] || '';
-            const fb = normalizedFeedback[idx] || normalizeFeedbackData(report.feedback?.[idx]);
+            const fb = normalizedFeedback[idx];
 
             return (
               <Card key={idx} className="p-6 border-slate-200 space-y-4 shadow-sm">
@@ -170,9 +173,13 @@ export const InterviewReportPage = () => {
                     Question {idx + 1} of {report.questions.length}
                   </span>
 
-                  <Badge variant={fb.score >= 80 ? 'emerald' : fb.score >= 65 ? 'indigo' : 'amber'}>
-                    Score: {fb.score || 0} / 100
-                  </Badge>
+                  {fb ? (
+                    <Badge variant={fb.score >= 80 ? 'emerald' : fb.score >= 65 ? 'indigo' : 'amber'}>
+                      Score: {fb.score} / {fb.max_score} ({Math.round(fb.percentage)}%)
+                    </Badge>
+                  ) : (
+                    <Badge variant="slate">Not evaluated</Badge>
+                  )}
                 </div>
 
                 <h3 className="font-extrabold text-slate-900 text-base">
@@ -184,6 +191,8 @@ export const InterviewReportPage = () => {
                   <p className="leading-relaxed whitespace-pre-wrap">{ans}</p>
                 </div>
 
+                {fb ? (
+                  <>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
                   <div className="p-3 bg-emerald-50/50 rounded-xl border border-emerald-200/60 space-y-1">
                     <span className="font-bold text-emerald-900 flex items-center gap-1">
@@ -234,11 +243,35 @@ export const InterviewReportPage = () => {
                   </div>
                 )}
 
+                {fb.concept_explanation && (
+                  <div className="p-3 rounded-xl bg-sky-50 border border-sky-200 text-xs text-slate-700">
+                    <span className="font-bold text-sky-900 block mb-1">Concept Explanation:</span>
+                    <p className="leading-relaxed">{fb.concept_explanation}</p>
+                  </div>
+                )}
+
+                {fb.suggestions?.length > 0 && (
+                  <div className="p-3 rounded-xl bg-emerald-50 border border-emerald-200 text-xs text-slate-700">
+                    <span className="font-bold text-emerald-900 block mb-1">Suggestions:</span>
+                    <ul className="list-disc list-inside space-y-0.5">
+                      {fb.suggestions.map((item, i) => (
+                        <li key={i}>{item}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+
                 {fb.improved_answer && (
                   <div className="p-3 rounded-xl bg-slate-900 text-slate-200 text-xs space-y-1">
                     <span className="font-bold text-indigo-300 block">Improved Answer:</span>
                     <p className="leading-relaxed text-slate-300">{fb.improved_answer}</p>
                   </div>
+                )}
+                  </>
+                ) : (
+                  <p className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs text-slate-600">
+                    No AI evaluation was saved for this answer.
+                  </p>
                 )}
 
               </Card>

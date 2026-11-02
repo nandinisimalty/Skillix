@@ -9,7 +9,7 @@ db = None
 
 try:
     import firebase_admin
-    from firebase_admin import credentials, firestore
+    from firebase_admin import credentials, firestore, auth
 
     if settings.FIREBASE_CREDENTIALS_PATH and os.path.exists(settings.FIREBASE_CREDENTIALS_PATH):
         cred = credentials.Certificate(settings.FIREBASE_CREDENTIALS_PATH)
@@ -23,3 +23,18 @@ except Exception as e:
 
 def get_db():
     return db
+
+def verify_firebase_token(id_token: str):
+    """
+    Verifies a Firebase ID token.
+    Returns the decoded token dict with 'uid', 'email', etc., or None if invalid.
+    """
+    if not id_token:
+        return None
+    try:
+        from firebase_admin import auth
+        decoded_token = auth.verify_id_token(id_token)
+        return decoded_token
+    except Exception as e:
+        logger.warning(f"Firebase token verification failed: {str(e)}")
+        return None

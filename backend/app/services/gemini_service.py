@@ -1,9 +1,81 @@
-import os
 import json
 import logging
+import re
+import time
+from collections.abc import Callable
 from app.config import settings
 
 logger = logging.getLogger(__name__)
+
+PRIMARY_FLASH_MODEL = "gemini-3.6-flash"
+FALLBACK_FLASH_MODEL = "gemini-3.5-flash-lite"
+TRANSIENT_RETRY_LIMIT = 1
+TRANSIENT_RETRY_DELAY_SECONDS = 0.5
+
+QUESTION_RESPONSE_SCHEMA = {
+    "type": "OBJECT",
+    "properties": {
+        "questions": {
+            "type": "ARRAY",
+            "items": {
+                "type": "OBJECT",
+                "properties": {
+                    "question": {"type": "STRING"},
+                    "category": {"type": "STRING"},
+                    "hints": {"type": "ARRAY", "items": {"type": "STRING"}},
+                },
+                "required": ["question", "category", "hints"],
+            },
+        },
+    },
+    "required": ["questions"],
+}
+
+EVALUATION_RESPONSE_SCHEMA = {
+    "type": "OBJECT",
+    "properties": {
+        "score": {"type": "INTEGER"},
+        "verdict": {
+            "type": "STRING",
+            "enum": ["Correct", "Mostly Correct", "Partially Correct", "Incorrect"],
+        },
+        "what_was_correct": {"type": "ARRAY", "items": {"type": "STRING"}},
+        "what_was_wrong": {"type": "ARRAY", "items": {"type": "STRING"}},
+        "missing_concepts": {"type": "ARRAY", "items": {"type": "STRING"}},
+        "concept_explanation": {"type": "STRING"},
+        "suggestions": {"type": "ARRAY", "items": {"type": "STRING"}},
+        "explanation": {"type": "STRING"},
+        "improved_answer": {"type": "STRING"},
+    },
+    "required": [
+        "score",
+        "verdict",
+        "what_was_correct",
+        "what_was_wrong",
+        "missing_concepts",
+        "concept_explanation",
+        "suggestions",
+        "explanation",
+        "improved_answer",
+    ],
+}
+
+
+class GeminiConfigurationError(RuntimeError):
+    pass
+
+
+class GeminiRequestError(RuntimeError):
+    pass
+
+
+class GeminiUnavailableError(GeminiRequestError):
+    pass
+
+
+class GeminiResponseError(RuntimeError):
+    pass
+
 
 class GeminiService:
     def __init__(self):
@@ -11,26 +83,43 @@ class GeminiService:
         self.client = None
         self._init_gemini()
 
+    def _redact_api_key(self, message: str) -> str:
+        if self.api_key:
+            return message.replace(self.api_key, "[REDACTED]")
+        return message
+
     def _init_gemini(self):
         if not self.api_key:
-            logger.info("Gemini API key is not configured. Service will use standard intelligent fallback mode.")
+            logger.error("GEMINI_API_KEY is not configured; interview AI endpoints will be unavailable.")
             return
 
         try:
-            # Try new google-genai SDK first
             from google import genai
-            self.client = genai.Client(api_key=self.api_key)
+            from google.genai import types
+
+            self.client = genai.Client(
+                api_key=self.api_key,
+                http_options=types.HttpOptions(
+                    retry_options=types.HttpRetryOptions(attempts=1)
+                ),
+            )
             logger.info("Gemini client initialized successfully with google-genai.")
         except Exception as e:
-            logger.warning(f"Could not initialize google-genai SDK ({str(e)}). Checking legacy SDK.")
-            try:
-                import google.generativeai as legacy_genai
-                legacy_genai.configure(api_key=self.api_key)
-                self.client = legacy_genai.GenerativeModel('gemini-1.5-flash')
-                logger.info("Gemini legacy GenerativeModel initialized.")
-            except Exception as ex:
-                logger.error(f"Failed to initialize Gemini SDK: {str(ex)}")
-                self.client = None
+            logger.error(
+                "Could not initialize google-genai SDK (%s).",
+                self._redact_api_key(str(e)),
+            )
+            self.client = None
+
+    def _require_gemini_client(self):
+        if not self.api_key:
+            raise GeminiConfigurationError(
+                "GEMINI_API_KEY is missing from the backend environment."
+            )
+        if not self.client:
+            raise GeminiConfigurationError(
+                "The Gemini client could not be initialized. Check the backend SDK and key configuration."
+            )
 
     def analyze_resume(self, resume_text: str, target_role: str = "Software Engineer") -> dict:
         prompt = f"""
@@ -65,85 +154,105 @@ class GeminiService:
         # Fallback structured resume analysis
         return self._fallback_resume_analysis(resume_text, target_role)
 
-    def generate_interview_questions(self, target_role: str, interview_type: str, difficulty: str, num_questions: int, topics: list[str]) -> dict:
+    def generate_interview_questions(
+        self,
+        target_role: str,
+        interview_type: str,
+        difficulty: str,
+        num_questions: int,
+        topics: list[str],
+        resume_context: str = None,
+    ) -> dict:
+        self._require_gemini_client()
         topics_str = ", ".join(topics) if topics else "General Core Concepts"
-        prompt = f"""
-        Generate {num_questions} realistic {difficulty} level interview questions for a candidate applying for '{target_role}'.
-        Interview Type: {interview_type} (Technical, HR, or Mixed)
-        Selected Focus Topics: {topics_str}
+        prompt = f"""Generate exactly {num_questions} distinct, role-specific {difficulty} {interview_type} interview questions.
+Role: {json.dumps(target_role, ensure_ascii=False)}
+Focus topics: {json.dumps(topics_str, ensure_ascii=False)}
+Resume context: {json.dumps(resume_context[:4000] if resume_context else "", ensure_ascii=False)}
 
-        Return a strict raw JSON object without markdown fences containing a key "questions" which is a list of items. Each item must have:
-        - "id": integer starting from 1
-        - "question": clear, detailed question string
-        - "category": string (e.g., Data Structures, System Design, HR Behavioral, DBMS)
-        - "difficulty": string ("{difficulty}")
-        - "hints": list of 2 short hints to guide the candidate
-        """
+Avoid repeating a question or testing the same concept in different wording. Make questions concrete and concise. Provide exactly two short hints per question. Return only the requested JSON object."""
 
-        if self.client and self.api_key:
-            try:
-                response_text = self._generate_content(prompt)
-                clean_json = self._clean_json_string(response_text)
-                parsed = json.loads(clean_json)
-                parsed["is_mock_response"] = False
-                parsed["target_role"] = target_role
-                parsed["interview_type"] = interview_type
-                parsed["difficulty"] = difficulty
-                return parsed
-            except Exception as e:
-                logger.error(f"Gemini API error during question generation: {str(e)}. Falling back.")
+        def validate_questions(parsed: dict) -> dict:
+            questions = parsed.get("questions") if isinstance(parsed, dict) else None
+            if not isinstance(questions, list) or len(questions) != num_questions:
+                raise GeminiResponseError(
+                    f"Gemini returned an invalid question list; expected exactly {num_questions} questions."
+                )
 
-        return self._fallback_questions(target_role, interview_type, difficulty, num_questions, topics)
+            normalized_questions = []
+            seen_questions = set()
+            for index, item in enumerate(questions, start=1):
+                if not isinstance(item, dict):
+                    raise GeminiResponseError(f"Gemini question {index} was not an object.")
+                question_text = item.get("question")
+                category = item.get("category")
+                hints = item.get("hints")
+                if not isinstance(question_text, str) or not question_text.strip():
+                    raise GeminiResponseError(f"Gemini question {index} has no question text.")
+                if not isinstance(category, str) or not category.strip():
+                    raise GeminiResponseError(f"Gemini question {index} has no category.")
+                if (
+                    not isinstance(hints, list)
+                    or len(hints) != 2
+                    or any(not isinstance(hint, str) or not hint.strip() for hint in hints)
+                ):
+                    raise GeminiResponseError(
+                        f"Gemini question {index} must have exactly two non-empty hints."
+                    )
+                normalized_question = re.sub(
+                    r"[\W_]+", " ", question_text.casefold(), flags=re.UNICODE
+                ).strip()
+                if normalized_question in seen_questions:
+                    raise GeminiResponseError("Gemini returned duplicate interview questions.")
+                seen_questions.add(normalized_question)
+                normalized_questions.append({
+                    "id": index,
+                    "question": question_text.strip(),
+                    "category": category.strip(),
+                    "difficulty": difficulty,
+                    "hints": [hint.strip() for hint in hints],
+                })
 
-    def evaluate_answer(self, target_role: str, interview_type: str, question: str, user_answer: str, topic: str = None) -> dict:
+            return {
+                "target_role": target_role,
+                "interview_type": interview_type,
+                "difficulty": difficulty,
+                "questions": normalized_questions,
+                "is_mock_response": False,
+            }
+
+        return self._generate_validated_json(
+            prompt,
+            QUESTION_RESPONSE_SCHEMA,
+            validate_questions,
+            "question generation",
+        )
+
+    def evaluate_answer(
+        self,
+        target_role: str,
+        interview_type: str,
+        question: str,
+        user_answer: str,
+        topic: str = None,
+        difficulty: str = "Medium",
+    ) -> dict:
+        self._require_gemini_client()
         relevant_topic = (topic or "General").strip() or "General"
-        prompt = f"""
-        You are an expert interviewer and assessor for a role targeting '{target_role}'.
-        Evaluate the submitted answer independently and fairly.
+        prompt = f"""Evaluate this interview answer fairly and specifically.
+Role: {json.dumps(target_role, ensure_ascii=False)}
+Interview type: {interview_type}; difficulty: {difficulty}; topic: {json.dumps(relevant_topic, ensure_ascii=False)}
+Question (JSON string): {json.dumps(question, ensure_ascii=False)}
+Candidate answer (JSON string): {json.dumps(user_answer, ensure_ascii=False)}
 
-        Interview type: {interview_type}
-        Relevant topic: {relevant_topic}
-        Question: "{question}"
-        Candidate answer: "{user_answer}"
+Score demonstrated correctness and completeness, not length or keywords. For HR, assess relevance, structure, professionalism, and specificity. Never claim code was run. Be concise but useful: identify strengths, mistakes, missing concepts, a beginner-friendly explanation, actionable suggestions, and an ideal answer. Ground every point in the supplied answer. Return only the JSON object matching the response schema."""
 
-        Evaluation instructions:
-        - Judge the actual answer, not the expected answer.
-        - For technical questions, assess technical correctness, relevance, completeness, important missing concepts, and quality of explanation.
-        - For HR questions, assess clarity, structure, relevance, professionalism, and specificity.
-        - For programming or SQL questions, judge the actual solution or explanation against the question requirements; do not claim a solution was executed or tested when it was not.
-        - If the answer is empty, vague, or says the user does not know, assign a low score and explain why.
-
-        Return only valid JSON with this exact structure and no markdown fences:
-        {{
-          "score": 0,
-          "verdict": "Incorrect",
-          "what_was_correct": ["one or more correct points from the answer"],
-          "what_was_wrong": ["specific mistake or weakness"],
-          "missing_concepts": ["important concepts or details missing"],
-          "explanation": "A short rationale describing why the score was assigned.",
-          "improved_answer": "A concise, stronger answer to the question."
-        }}
-
-        Rules:
-        - score must be an integer between 0 and 100.
-        - verdict should be one of: "Correct", "Mostly Correct", "Partially Correct", or "Incorrect".
-        - Do not reuse a generic sentence for every answer. Ground every item in the actual question and answer.
-        - Make the feedback helpful, fair, and specific to the candidate's response.
-        """
-
-        if self.client and self.api_key:
-            try:
-                response_text = self._generate_content(prompt)
-                clean_json = self._clean_json_string(response_text)
-                parsed = json.loads(clean_json)
-                normalized = self._normalize_answer_evaluation(parsed, question, user_answer)
-                normalized["is_mock_response"] = False
-                return normalized
-            except Exception as e:
-                logger.error(f"Gemini API error during answer evaluation: {str(e)}.", exc_info=True)
-                raise
-
-        return self._fallback_evaluation(question, user_answer, target_role, interview_type, relevant_topic)
+        return self._generate_validated_json(
+            prompt,
+            EVALUATION_RESPONSE_SCHEMA,
+            self._normalize_answer_evaluation,
+            "answer evaluation",
+        )
 
     def generate_study_plan(self, target_role: str, weak_topics: list[str], recent_feedback: list) -> dict:
         weak_str = ", ".join(weak_topics) if weak_topics else "Data Structures, System Design, HR Scenarios"
@@ -171,30 +280,178 @@ class GeminiService:
 
         return self._fallback_study_plan(target_role, weak_topics)
 
-    def _generate_content(self, prompt: str) -> str:
-        if hasattr(self.client, 'models'): # google-genai SDK
-            candidate_models = [
-                'gemini-3.5-flash-lite',
-                'gemini-3.8-flash',
-                'gemini-2.5-flash',
-                'gemini-2.0-flash'
-            ]
-            last_error = None
-            for model_name in candidate_models:
-                try:
-                    res = self.client.models.generate_content(
-                        model=model_name,
-                        contents=prompt
+    def _generate_validated_json(
+        self,
+        prompt: str,
+        response_schema: dict,
+        validator: Callable[[dict], dict],
+        operation: str,
+    ) -> dict:
+        response_text = self._generate_content(prompt, response_schema)
+        for repair_attempt in range(2):
+            try:
+                parsed = json.loads(response_text)
+                if not isinstance(parsed, dict):
+                    raise GeminiResponseError("Gemini returned a non-object JSON response.")
+                return validator(parsed)
+            except (json.JSONDecodeError, TypeError, GeminiResponseError) as exc:
+                if repair_attempt == 1:
+                    logger.error(
+                        "Gemini returned invalid %s JSON after one repair attempt: %s",
+                        operation,
+                        self._redact_api_key(str(exc)),
                     )
-                    return res.text
-                except Exception as exc:
-                    last_error = exc
-                    logger.warning(f"Gemini model {model_name} failed: {exc}")
-            raise RuntimeError(f"All Gemini model attempts failed. Last error: {last_error}")
-        elif hasattr(self.client, 'generate_content'): # legacy google.generativeai SDK
-            res = self.client.generate_content(prompt)
-            return res.text
-        raise RuntimeError("No suitable Gemini client initialized")
+                    raise GeminiResponseError(
+                        f"Gemini returned invalid {operation} data after one repair attempt. Please retry."
+                    ) from exc
+                logger.warning(
+                    "Gemini returned invalid %s JSON; requesting one repair: %s",
+                    operation,
+                    self._redact_api_key(str(exc)),
+                )
+                response_text = self._generate_content(
+                    f"""Repair this malformed {operation} response into a single valid JSON object matching the provided response schema.
+Do not add markdown, commentary, or new claims. Preserve the original meaning and content where valid.
+Malformed response:
+{response_text}""",
+                    response_schema,
+                )
+        raise GeminiResponseError(f"Gemini returned invalid {operation} data.")
+
+    def _generate_content(self, prompt: str, response_schema: dict = None) -> str:
+        self._require_gemini_client()
+        if hasattr(self.client, "models"):
+            candidate_models = (PRIMARY_FLASH_MODEL, FALLBACK_FLASH_MODEL)
+            for model_name in candidate_models:
+                last_transient_error = None
+                for retry_number in range(TRANSIENT_RETRY_LIMIT + 1):
+                    try:
+                        generation_config = None
+                        if response_schema is not None:
+                            from google.genai import types
+
+                            generation_config = types.GenerateContentConfig(
+                                response_mime_type="application/json",
+                                response_schema=response_schema,
+                            )
+                        response = self.client.models.generate_content(
+                            model=model_name,
+                            contents=prompt,
+                            config=generation_config,
+                        )
+                        if response and response.text and response.text.strip():
+                            logger.info("Gemini request succeeded with model %s.", model_name)
+                            return response.text
+                        raise GeminiResponseError(
+                            f"Gemini model {model_name} returned an empty response."
+                        )
+                    except GeminiResponseError:
+                        raise
+                    except Exception as exc:
+                        safe_message = self._redact_api_key(str(exc))
+                        status_code = self._provider_status_code(exc)
+                        error_text = safe_message.lower()
+
+                        if status_code in (401, 403) or any(marker in error_text for marker in (
+                            "unauthorized",
+                            "permission denied",
+                            "api key not valid",
+                            "api_key_invalid",
+                            "invalid api key",
+                        )):
+                            logger.error(
+                                "Gemini rejected the configured key or its API access (%s): %s",
+                                type(exc).__name__,
+                                safe_message,
+                            )
+                            raise GeminiConfigurationError(
+                                "Gemini rejected the configured API key or API access. Check the backend key and Google AI API settings."
+                            ) from None
+
+                        is_quota_exhausted = (
+                            status_code == 429 or "resource_exhausted" in error_text
+                        )
+                        is_service_unavailable = (
+                            status_code == 503 or "service unavailable" in error_text
+                        )
+                        if is_quota_exhausted:
+                            last_transient_error = exc
+                            logger.warning(
+                                "Gemini model %s exhausted quota; switching to fallback without retry: %s",
+                                model_name,
+                                safe_message,
+                            )
+                            break
+                        if is_service_unavailable:
+                            last_transient_error = exc
+                            if retry_number < TRANSIENT_RETRY_LIMIT:
+                                delay = TRANSIENT_RETRY_DELAY_SECONDS * (2 ** retry_number)
+                                logger.warning(
+                                    "Gemini model %s returned a temporary error; retry %s/%s in %s second(s): %s",
+                                    model_name,
+                                    retry_number + 1,
+                                    TRANSIENT_RETRY_LIMIT,
+                                    f"{delay:g}",
+                                    safe_message,
+                                )
+                                time.sleep(delay)
+                                continue
+                            logger.warning(
+                                "Gemini model %s remained unavailable after %s retries: %s",
+                                model_name,
+                                TRANSIENT_RETRY_LIMIT,
+                                safe_message,
+                            )
+                            break
+
+                        if status_code == 400 or any(marker in error_text for marker in (
+                            "invalid_argument",
+                            "bad request",
+                        )):
+                            logger.error(
+                                "Gemini rejected the request (%s): %s",
+                                type(exc).__name__,
+                                safe_message,
+                            )
+                            raise GeminiRequestError(
+                                "Gemini rejected the request. Check the interview input and backend logs."
+                            ) from None
+
+                        logger.error(
+                            "Gemini API request failed (%s): %s",
+                            type(exc).__name__,
+                            safe_message,
+                        )
+                        raise GeminiRequestError(
+                            f"Gemini API request failed ({type(exc).__name__}). Check backend logs."
+                        ) from None
+
+                if last_transient_error is None:
+                    raise GeminiRequestError("Gemini did not return a usable response.")
+
+            raise GeminiUnavailableError(
+                "Gemini is temporarily unavailable. Please retry in a few moments."
+            ) from None
+        if hasattr(self.client, "generate_content"):
+            raise GeminiConfigurationError(
+                "The installed Gemini client does not support the Google GenAI models API."
+            )
+        raise GeminiConfigurationError("No supported Gemini SDK client is initialized.")
+
+    @staticmethod
+    def _provider_status_code(exc: Exception) -> int | None:
+        response = getattr(exc, "response", None)
+        for value in (
+            getattr(exc, "status_code", None),
+            getattr(exc, "code", None),
+            getattr(exc, "status", None),
+            getattr(response, "status_code", None),
+        ):
+            if isinstance(value, int):
+                return value
+            if isinstance(value, str) and value.isdigit():
+                return int(value)
+        return None
 
     def _clean_json_string(self, text: str) -> str:
         text = text.strip()
@@ -204,7 +461,12 @@ class GeminiService:
             text = text[3:]
         if text.endswith("```"):
             text = text[:-3]
-        return text.strip()
+        text = text.strip()
+        first_brace = text.find("{")
+        last_brace = text.rfind("}")
+        if first_brace != -1 and last_brace != -1 and last_brace > first_brace:
+            return text[first_brace:last_brace + 1]
+        return text
 
     def _derive_verdict(self, score: int) -> str:
         if score >= 80:
@@ -215,70 +477,61 @@ class GeminiService:
             return "Partially Correct"
         return "Incorrect"
 
-    def _normalize_answer_evaluation(self, payload: dict, question: str, user_answer: str) -> dict:
+    def _normalize_answer_evaluation(self, payload: dict) -> dict:
         if not isinstance(payload, dict):
-            raise ValueError("Gemini returned a non-object response for answer evaluation.")
+            raise GeminiResponseError("Gemini returned a non-object evaluation.")
 
-        def normalize_list(value):
-            if isinstance(value, list):
-                items = []
-                for item in value:
-                    if isinstance(item, str) and item.strip():
-                        items.append(item.strip())
-                    elif item is not None:
-                        text = str(item).strip()
-                        if text:
-                            items.append(text)
-                return items
-            if isinstance(value, str) and value.strip():
-                return [value.strip()]
-            return []
+        score_raw = payload.get("score")
+        if (
+            isinstance(score_raw, bool)
+            or not isinstance(score_raw, (int, float))
+            or not float(score_raw).is_integer()
+            or not 0 <= score_raw <= 100
+        ):
+            raise GeminiResponseError("Gemini returned an invalid score.")
+        score = int(score_raw)
 
-        score_raw = payload.get("score", 0)
-        try:
-            score = int(score_raw)
-        except (TypeError, ValueError):
-            score = 0
-        score = max(0, min(100, score))
-
-        verdict = payload.get("verdict") or self._derive_verdict(score)
-        if not isinstance(verdict, str) or not verdict.strip():
-            verdict = self._derive_verdict(score)
-
-        explanation = payload.get("explanation") or payload.get("summary") or "The response was evaluated against the question's requirements and the candidate's answer quality."
-        improved_answer = payload.get("improved_answer") or payload.get("better_answer_example") or self._build_default_model_answer(question, user_answer)
-
-        raw_correct = normalize_list(payload.get("what_was_correct")) or normalize_list(payload.get("what_went_well"))
-        if score < 50:
-            raw_correct = [item for item in (raw_correct or []) if not any(pattern in item.lower() for pattern in ["addressed the core idea", "the answer was relevant", "the answer is correct", "the response was clear"])]
-
-        raw_wrong = normalize_list(payload.get("what_was_wrong")) or normalize_list(payload.get("what_is_missing"))
-        if not raw_wrong and score < 50 and not raw_correct:
-            raw_wrong = ["The response did not sufficiently answer the question or demonstrate the expected understanding."]
-
-        if score >= 50:
-            what_was_correct = raw_correct or ["The answer addressed the core idea of the question."]
-        else:
-            what_was_correct = []
-
-        normalized = {
-            "score": score,
-            "verdict": verdict.strip(),
-            "what_was_correct": what_was_correct,
-            "what_was_wrong": raw_wrong or ["No major issues were identified."],
-            "missing_concepts": normalize_list(payload.get("missing_concepts")) or [],
-            "explanation": str(explanation).strip() or "The answer was evaluated against the question requirements and the quality of the explanation provided.",
-            "improved_answer": str(improved_answer).strip() or self._build_default_model_answer(question, user_answer),
-            "is_mock_response": False
+        allowed_verdicts = {
+            "Correct",
+            "Mostly Correct",
+            "Partially Correct",
+            "Incorrect",
         }
+        verdict = payload.get("verdict")
+        if verdict not in allowed_verdicts:
+            raise GeminiResponseError("Gemini returned an invalid correctness verdict.")
 
-        if score < 50 and not normalized["what_was_correct"]:
-            normalized["what_was_wrong"] = raw_wrong or ["The answer did not adequately meet the question requirements."]
+        def read_list(field: str, required: bool = False) -> list[str]:
+            value = payload.get(field)
+            if not isinstance(value, list) or any(
+                not isinstance(item, str) or not item.strip() for item in value
+            ):
+                raise GeminiResponseError(f"Gemini returned an invalid {field} list.")
+            items = [item.strip() for item in value]
+            if required and not items:
+                raise GeminiResponseError(f"Gemini returned no {field}.")
+            return items
 
-        if not normalized["what_was_wrong"] and not normalized["missing_concepts"]:
-            normalized["what_was_wrong"] = ["No significant gaps were identified in the submitted answer."]
+        def read_text(field: str) -> str:
+            value = payload.get(field)
+            if not isinstance(value, str) or not value.strip():
+                raise GeminiResponseError(f"Gemini returned no {field}.")
+            return value.strip()
 
-        return normalized
+        return {
+            "score": score,
+            "max_score": 100,
+            "percentage": float(score),
+            "verdict": verdict,
+            "what_was_correct": read_list("what_was_correct"),
+            "what_was_wrong": read_list("what_was_wrong"),
+            "missing_concepts": read_list("missing_concepts"),
+            "concept_explanation": read_text("concept_explanation"),
+            "suggestions": read_list("suggestions", required=True),
+            "explanation": read_text("explanation"),
+            "improved_answer": read_text("improved_answer"),
+            "is_mock_response": False,
+        }
 
     def _build_default_model_answer(self, question: str, user_answer: str) -> str:
         if not question:
