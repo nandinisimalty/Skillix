@@ -28,14 +28,16 @@ import { Navbar } from '../components/common/Navbar';
 
 
 export const ResumePage = () => {
-  const { userProfile } = useAuth();
+  const { userProfile, currentUser } = useAuth();
   const navigate = useNavigate();
 
   const [file, setFile] = useState(null);
   const [targetRole, setTargetRole] = useState(userProfile?.targetRole || 'Software Engineer');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
-  const [analysis, setAnalysis] = useState(() => demoStorage.getResumeAnalysis());
+  const [analysis, setAnalysis] = useState(() => (
+    currentUser?.uid ? demoStorage.getResumeAnalysis(currentUser.uid) : null
+  ));
 
   const handleFileChange = (e) => {
     setError('');
@@ -66,7 +68,7 @@ export const ResumePage = () => {
 
       const result = await apiService.analyzeResume(file, targetRole);
       setAnalysis(result);
-      demoStorage.saveResumeAnalysis(result);
+      if (currentUser?.uid) demoStorage.saveResumeAnalysis(currentUser.uid, result);
     } catch (err) {
       console.error(err);
       setError(err.message || 'Failed to analyze PDF resume. Please ensure it contains readable text.');

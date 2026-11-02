@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
+import { useAuth } from '../context/AuthContext';
 import { apiService } from '../services/api';
 import { demoStorage } from '../services/demoData';
 import { 
@@ -71,6 +72,7 @@ const DEFAULT_CONFIG = {
 export const InterviewSessionPage = () => {
   const location = useLocation();
   const navigate = useNavigate();
+  const { currentUser } = useAuth();
 
   const config = location.state || DEFAULT_CONFIG;
 
@@ -182,6 +184,7 @@ export const InterviewSessionPage = () => {
       : null;
 
     const reportData = {
+      userId: currentUser.uid,
       targetRole: config.targetRole,
       interviewType: config.interviewType,
       difficulty: config.difficulty,
@@ -194,9 +197,9 @@ export const InterviewSessionPage = () => {
     };
 
     // Save report to Storage / Firestore
-    demoStorage.saveInterview(reportData);
+    const savedReport = demoStorage.saveInterview(currentUser.uid, reportData);
 
-    navigate('/interview/report', { state: { report: reportData } });
+    navigate('/interview/report', { state: { report: savedReport } });
   };
 
   if (loadingQuestions) {

@@ -1,37 +1,31 @@
-// Local storage key defaults
 const STORAGE_KEYS = {
   USER_PROFILE: 'skillix_user_profile',
-  INTERVIEWS: 'skillix_interviews_history',
+  INTERVIEWS: 'skillix_interviews',
   RESUME_ANALYSIS: 'skillix_resume_analyses',
   STUDY_PLANS: 'skillix_study_plans'
 };
 
-const DEFAULT_PROFILE = {
-  uid: 'demo_user_123',
-  name: 'Alex Morgan',
-  email: 'alex.morgan@university.edu',
-  college: 'Stanford University / MIT',
-  degree: 'B.S. Computer Science',
-  gradYear: '2026',
-  targetRole: 'Software Engineer',
-  skills: 'Python, React, JavaScript, Node.js, SQL, Data Structures',
-  experienceLevel: 'Entry Level / Student'
-};
+const getUserStorageKey = (key, uid) => (
+  typeof uid === 'string' && uid.trim() ? `${key}_${uid}` : null
+);
 
 export const demoStorage = {
-  // Profile
-  getProfile: () => {
+  getProfile: (uid) => {
+    const key = getUserStorageKey(STORAGE_KEYS.USER_PROFILE, uid);
+    if (!key) return null;
     try {
-      const saved = localStorage.getItem(STORAGE_KEYS.USER_PROFILE);
-      return saved ? JSON.parse(saved) : DEFAULT_PROFILE;
+      const saved = localStorage.getItem(key);
+      return saved ? JSON.parse(saved) : null;
     } catch {
-      return DEFAULT_PROFILE;
+      return null;
     }
   },
-  saveProfile: (profileData) => {
+  saveProfile: (uid, profileData) => {
+    const key = getUserStorageKey(STORAGE_KEYS.USER_PROFILE, uid);
+    if (!key) return profileData;
     try {
-      const updated = { ...demoStorage.getProfile(), ...profileData };
-      localStorage.setItem(STORAGE_KEYS.USER_PROFILE, JSON.stringify(updated));
+      const updated = { ...(demoStorage.getProfile(uid) || {}), ...profileData, uid };
+      localStorage.setItem(key, JSON.stringify(updated));
       return updated;
     } catch (e) {
       console.error("Failed to save profile locally", e);
@@ -39,14 +33,15 @@ export const demoStorage = {
     }
   },
 
-  // Interviews History
-  getInterviews: () => {
+  getInterviews: (uid) => {
+    const key = getUserStorageKey(STORAGE_KEYS.INTERVIEWS, uid);
+    if (!key) return [];
     try {
-      const saved = localStorage.getItem(STORAGE_KEYS.INTERVIEWS);
+      const saved = localStorage.getItem(key);
       if (saved) {
         const interviews = JSON.parse(saved);
         return Array.isArray(interviews)
-          ? interviews.filter((interview) => interview?.id !== 'int_sample_101')
+          ? interviews.filter((interview) => interview?.userId === uid && interview?.id !== 'int_sample_101')
           : [];
       }
     } catch (e) {
@@ -54,16 +49,19 @@ export const demoStorage = {
     }
     return [];
   },
-  saveInterview: (interviewObj) => {
+  saveInterview: (uid, interviewObj) => {
+    const key = getUserStorageKey(STORAGE_KEYS.INTERVIEWS, uid);
+    if (!key) return interviewObj;
     try {
-      const history = demoStorage.getInterviews();
+      const history = demoStorage.getInterviews(uid);
       const newInterview = {
         id: `int_${Date.now()}`,
         createdAt: new Date().toISOString(),
-        ...interviewObj
+        ...interviewObj,
+        userId: uid
       };
       const updated = [newInterview, ...history];
-      localStorage.setItem(STORAGE_KEYS.INTERVIEWS, JSON.stringify(updated));
+      localStorage.setItem(key, JSON.stringify(updated));
       return newInterview;
     } catch (e) {
       console.error("Failed to save interview locally", e);
@@ -71,19 +69,23 @@ export const demoStorage = {
     }
   },
 
-  // Resume Analyses
-  getResumeAnalysis: () => {
+  getResumeAnalysis: (uid) => {
+    const key = getUserStorageKey(STORAGE_KEYS.RESUME_ANALYSIS, uid);
+    if (!key) return null;
     try {
-      const saved = localStorage.getItem(STORAGE_KEYS.RESUME_ANALYSIS);
-      return saved ? JSON.parse(saved) : null;
+      const saved = localStorage.getItem(key);
+      const analysis = saved ? JSON.parse(saved) : null;
+      return analysis?.userId === uid ? analysis : null;
     } catch {
       return null;
     }
   },
-  saveResumeAnalysis: (analysis) => {
+  saveResumeAnalysis: (uid, analysis) => {
+    const key = getUserStorageKey(STORAGE_KEYS.RESUME_ANALYSIS, uid);
+    if (!key) return analysis;
     try {
-      const record = { ...analysis, createdAt: new Date().toISOString() };
-      localStorage.setItem(STORAGE_KEYS.RESUME_ANALYSIS, JSON.stringify(record));
+      const record = { ...analysis, createdAt: new Date().toISOString(), userId: uid };
+      localStorage.setItem(key, JSON.stringify(record));
       return record;
     } catch (e) {
       console.error(e);
@@ -91,19 +93,23 @@ export const demoStorage = {
     }
   },
 
-  // Study Plans
-  getStudyPlan: () => {
+  getStudyPlan: (uid) => {
+    const key = getUserStorageKey(STORAGE_KEYS.STUDY_PLANS, uid);
+    if (!key) return null;
     try {
-      const saved = localStorage.getItem(STORAGE_KEYS.STUDY_PLANS);
-      return saved ? JSON.parse(saved) : null;
+      const saved = localStorage.getItem(key);
+      const plan = saved ? JSON.parse(saved) : null;
+      return plan?.userId === uid ? plan : null;
     } catch {
       return null;
     }
   },
-  saveStudyPlan: (plan) => {
+  saveStudyPlan: (uid, plan) => {
+    const key = getUserStorageKey(STORAGE_KEYS.STUDY_PLANS, uid);
+    if (!key) return plan;
     try {
-      const record = { ...plan, createdAt: new Date().toISOString() };
-      localStorage.setItem(STORAGE_KEYS.STUDY_PLANS, JSON.stringify(record));
+      const record = { ...plan, createdAt: new Date().toISOString(), userId: uid };
+      localStorage.setItem(key, JSON.stringify(record));
       return record;
     } catch (e) {
       console.error(e);

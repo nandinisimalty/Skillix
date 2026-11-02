@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { demoStorage } from '../services/demoData';
@@ -27,17 +27,9 @@ import { Navbar } from '../components/common/Navbar';
 export const DashboardPage = () => {
   const { userProfile, currentUser } = useAuth();
   const navigate = useNavigate();
-  const [interviews, setInterviews] = useState([]);
-  const [resumeAnalysis, setResumeAnalysis] = useState(null);
-
-  useEffect(() => {
-    // Load actual saved interviews from storage / firestore
-    const loadedInterviews = demoStorage.getInterviews();
-    setInterviews(loadedInterviews || []);
-
-    const loadedResume = demoStorage.getResumeAnalysis();
-    setResumeAnalysis(loadedResume);
-  }, []);
+  const [interviews] = useState(() => (
+    currentUser?.uid ? demoStorage.getInterviews(currentUser.uid) : []
+  ));
 
   // Compute actual dynamic statistics
   const totalInterviews = interviews.length;

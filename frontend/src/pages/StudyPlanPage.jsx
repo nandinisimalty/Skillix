@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { useLocation } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { apiService } from '../services/api';
@@ -21,19 +21,23 @@ import { Badge } from '../components/common/Badge';
 import { LoadingSpinner } from '../components/common/LoadingSpinner';
 import { Navbar } from '../components/common/Navbar';
 
+const DEFAULT_WEAK_TOPICS = ['Data Structures', 'DBMS Optimization', 'System Design'];
 
 export const StudyPlanPage = () => {
-  const { userProfile } = useAuth();
+  const { userProfile, currentUser } = useAuth();
   const location = useLocation();
 
   const targetRole = location.state?.targetRole || userProfile?.targetRole || 'Software Engineer';
-  const weakTopics = location.state?.weakTopics || ['Data Structures', 'DBMS Optimization', 'System Design'];
+  const weakTopics = location.state?.weakTopics || DEFAULT_WEAK_TOPICS;
+  const userId = currentUser?.uid;
 
   const [loading, setLoading] = useState(false);
-  const [studyPlan, setStudyPlan] = useState(() => demoStorage.getStudyPlan());
+  const [studyPlan, setStudyPlan] = useState(() => (
+    currentUser?.uid ? demoStorage.getStudyPlan(currentUser.uid) : null
+  ));
   const [completedTasks, setCompletedTasks] = useState({});
 
-  const generatePlan = async () => {
+  const generatePlan = useCallback(async () => {
     try {
       setLoading(true);
       const res = await apiService.generateStudyPlan({
@@ -42,19 +46,19 @@ export const StudyPlanPage = () => {
         recentFeedback: []
       });
       setStudyPlan(res);
-      demoStorage.saveStudyPlan(res);
+      if (userId) demoStorage.saveStudyPlan(userId, res);
     } catch (err) {
       console.error(err);
     } finally {
       setLoading(false);
     }
-  };
+  }, [targetRole, userId, weakTopics]);
 
   useEffect(() => {
-    if (!studyPlan) {
+    if (!studyPlan && userId) {
       generatePlan();
     }
-  }, []);
+  }, [generatePlan, studyPlan, userId]);
 
   const toggleTask = (taskId) => {
     setCompletedTasks((prev) => ({

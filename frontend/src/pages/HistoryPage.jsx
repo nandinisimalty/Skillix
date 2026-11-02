@@ -1,5 +1,6 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
+import { useAuth } from '../context/AuthContext';
 import { demoStorage } from '../services/demoData';
 import { 
   History, 
@@ -19,13 +20,11 @@ import { Navbar } from '../components/common/Navbar';
 
 export const HistoryPage = () => {
   const navigate = useNavigate();
-  const [interviews, setInterviews] = useState([]);
+  const { currentUser } = useAuth();
+  const [interviews] = useState(() => (
+    currentUser?.uid ? demoStorage.getInterviews(currentUser.uid) : []
+  ));
   const [filterType, setFilterType] = useState('All');
-
-  useEffect(() => {
-    const list = demoStorage.getInterviews();
-    setInterviews(list || []);
-  }, []);
 
   const filteredInterviews = interviews.filter((item) => {
     if (filterType === 'All') return true;

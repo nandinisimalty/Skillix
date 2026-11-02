@@ -1,5 +1,6 @@
 import React from 'react';
 import { useLocation, useNavigate, Link } from 'react-router-dom';
+import { useAuth } from '../context/AuthContext';
 import { 
   Sparkles, 
   AlertTriangle, 
@@ -54,8 +55,10 @@ const normalizeFeedbackData = (value) => {
 export const InterviewReportPage = () => {
   const location = useLocation();
   const navigate = useNavigate();
+  const { currentUser } = useAuth();
 
-  const report = location.state?.report;
+  const candidateReport = location.state?.report;
+  const report = candidateReport?.userId === currentUser?.uid ? candidateReport : null;
 
   if (!report) {
     return (

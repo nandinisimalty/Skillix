@@ -25,10 +25,13 @@ export const AuthProvider = ({ children }) => {
   const [authLoading, setAuthLoading] = useState(true);
   const [profileStatus, setProfileStatus] = useState('idle');
   const [profileError, setProfileError] = useState('');
+  const activeUidRef = useRef(null);
   const activeFetchUidRef = useRef(null);
+  const profileFetchVersionRef = useRef(0);
+  const profileReadyUidRef = useRef(null);
 
   const getLocalProfileForUser = (uid, email, preferredName = '') => {
-    const saved = demoStorage.getProfile();
+    const saved = demoStorage.getProfile(uid);
     const ownSavedProfile = saved?.uid === uid ? saved : {};
     return {
       uid,
@@ -62,13 +65,17 @@ export const AuthProvider = ({ children }) => {
   };
 
   const fetchProfile = async (uid, email, preferredName = '') => {
-    if (!uid) return null;
+    if (!uid || activeUidRef.current !== uid) return null;
 
     // Prevent duplicate concurrent fetches for the same user
     if (activeFetchUidRef.current === uid) {
       return userProfile;
     }
     activeFetchUidRef.current = uid;
+    const fetchVersion = ++profileFetchVersionRef.current;
+    const isCurrentFetch = () => (
+      activeUidRef.current === uid && profileFetchVersionRef.current === fetchVersion
+    );
 
     setProfileStatus('loading');
     setProfileError('');
@@ -77,11 +84,14 @@ export const AuthProvider = ({ children }) => {
       const message = firebaseInitializationError
         ? `Firebase initialization failed: ${firebaseInitializationError}`
         : 'Firebase Firestore is not configured. This profile is stored only on this device.';
-      setProfileError(message);
-      setProfileStatus('fallback');
       const localProfile = getLocalProfileForUser(uid, email, preferredName);
-      setUserProfile(localProfile);
-      activeFetchUidRef.current = null;
+      if (isCurrentFetch()) {
+        setProfileError(message);
+        setProfileStatus('fallback');
+        setUserProfile(localProfile);
+        profileReadyUidRef.current = uid;
+        activeFetchUidRef.current = null;
+      }
       return localProfile;
     }
 
@@ -108,11 +118,14 @@ export const AuthProvider = ({ children }) => {
           email: email || data.email || '',
           name: data.name || preferredName || email?.split('@')[0] || 'User'
         };
-        setUserProfile(profile);
-        demoStorage.saveProfile(profile);
-        setProfileStatus('loaded');
-        setProfileError('');
-        activeFetchUidRef.current = null;
+        if (isCurrentFetch()) {
+          setUserProfile(profile);
+          demoStorage.saveProfile(uid, profile);
+          setProfileStatus('loaded');
+          setProfileError('');
+          profileReadyUidRef.current = uid;
+          activeFetchUidRef.current = null;
+        }
         return profile;
       }
 
@@ -142,31 +155,56 @@ export const AuthProvider = ({ children }) => {
             }, 6000)
           )
         ]);
-        setUserProfile(initialProfile);
-        demoStorage.saveProfile(initialProfile);
-        setProfileStatus('loaded');
-        setProfileError('');
-        activeFetchUidRef.current = null;
+        if (isCurrentFetch()) {
+          setUserProfile(initialProfile);
+          demoStorage.saveProfile(uid, initialProfile);
+          setProfileStatus('loaded');
+          setProfileError('');
+          profileReadyUidRef.current = uid;
+          activeFetchUidRef.current = null;
+        }
         return initialProfile;
       } catch (createErr) {
         console.warn(`Firestore profile creation failed (${createErr?.code || 'unknown'}):`, createErr);
-        setUserProfile(initialProfile);
-        demoStorage.saveProfile(initialProfile);
-        setProfileStatus('fallback');
-        setProfileError(describeProfileError(createErr));
-        activeFetchUidRef.current = null;
+        if (isCurrentFetch()) {
+          setUserProfile(initialProfile);
+          demoStorage.saveProfile(uid, initialProfile);
+          setProfileStatus('fallback');
+          setProfileError(describeProfileError(createErr));
+          profileReadyUidRef.current = uid;
+          activeFetchUidRef.current = null;
+        }
         return initialProfile;
       }
     } catch (err) {
       const message = describeProfileError(err);
       console.warn(`Firestore profile fetch failed (${err?.code || 'unknown'}):`, err);
       const localProfile = getLocalProfileForUser(uid, email, preferredName);
-      setUserProfile(localProfile);
-      setProfileStatus('fallback');
-      setProfileError(message);
-      activeFetchUidRef.current = null;
+      if (isCurrentFetch()) {
+        setUserProfile(localProfile);
+        setProfileStatus('fallback');
+        setProfileError(message);
+        profileReadyUidRef.current = uid;
+        activeFetchUidRef.current = null;
+      }
       return localProfile;
     }
+  };
+
+  const beginUserSession = (user) => {
+    if (activeUidRef.current === user.uid) {
+      setCurrentUser(user);
+      return;
+    }
+    profileFetchVersionRef.current += 1;
+    activeFetchUidRef.current = null;
+    profileReadyUidRef.current = null;
+    activeUidRef.current = user.uid;
+    setCurrentUser(user);
+    setUserProfile(null);
+    setProfileStatus('loading');
+    setProfileError('');
+    setAuthLoading(true);
   };
 
   useEffect(() => {
@@ -174,6 +212,7 @@ export const AuthProvider = ({ children }) => {
 
     // If Firebase is not configured or auth not initialized
     if (!isFirebaseConfigured || !auth) {
+      activeUidRef.current = null;
       setCurrentUser(null);
       setUserProfile(null);
       setProfileStatus('idle');
@@ -188,15 +227,25 @@ export const AuthProvider = ({ children }) => {
         async (user) => {
           if (!isMounted) return;
           if (user) {
-            setCurrentUser(user);
-            // Authentication is resolved immediately so routes are never stuck
-            setAuthLoading(false);
+            if (activeUidRef.current !== user.uid) {
+              beginUserSession(user);
+            } else {
+              setCurrentUser(user);
+            }
             try {
-              await fetchProfile(user.uid, user.email, user.displayName || '');
+              if (profileReadyUidRef.current !== user.uid) {
+                await fetchProfile(user.uid, user.email, user.displayName || '');
+              }
             } catch (err) {
               console.warn("Firebase profile sync warning:", err);
+            } finally {
+              if (activeUidRef.current === user.uid) setAuthLoading(false);
             }
           } else {
+            profileFetchVersionRef.current += 1;
+            activeUidRef.current = null;
+            activeFetchUidRef.current = null;
+            profileReadyUidRef.current = null;
             setCurrentUser(null);
             setUserProfile(null);
             setProfileStatus('idle');
@@ -207,6 +256,10 @@ export const AuthProvider = ({ children }) => {
         (error) => {
           console.warn("Firebase onAuthStateChanged error:", error);
           if (!isMounted) return;
+          profileFetchVersionRef.current += 1;
+          activeUidRef.current = null;
+          activeFetchUidRef.current = null;
+          profileReadyUidRef.current = null;
           setCurrentUser(null);
           setUserProfile(null);
           setProfileStatus('idle');
@@ -221,6 +274,9 @@ export const AuthProvider = ({ children }) => {
       };
     } catch (e) {
       console.warn("Firebase auth listener failed to attach:", e);
+      activeUidRef.current = null;
+      activeFetchUidRef.current = null;
+      profileReadyUidRef.current = null;
       setCurrentUser(null);
       setUserProfile(null);
       setProfileStatus('idle');
@@ -251,9 +307,12 @@ export const AuthProvider = ({ children }) => {
       createdAt: new Date().toISOString()
     };
 
-    setCurrentUser(res.user);
+    beginUserSession(res.user);
+    profileFetchVersionRef.current += 1;
+    activeFetchUidRef.current = null;
     setUserProfile(initialProfile);
-    demoStorage.saveProfile(initialProfile);
+    profileReadyUidRef.current = res.user.uid;
+    demoStorage.saveProfile(res.user.uid, initialProfile);
 
     if (db) {
       setProfileStatus('saving');
@@ -277,6 +336,7 @@ export const AuthProvider = ({ children }) => {
       setProfileStatus('fallback');
       setProfileError('Firestore is not initialized. This profile is stored only on this device.');
     }
+    setAuthLoading(false);
 
     return res.user;
   };
@@ -290,8 +350,7 @@ export const AuthProvider = ({ children }) => {
     }
 
     const res = await signInWithEmailAndPassword(auth, email, password);
-    setCurrentUser(res.user);
-    await fetchProfile(res.user.uid, res.user.email);
+    beginUserSession(res.user);
     return res.user;
   };
 
@@ -304,8 +363,7 @@ export const AuthProvider = ({ children }) => {
     }
 
     const res = await signInWithPopup(auth, googleProvider);
-    setCurrentUser(res.user);
-    await fetchProfile(res.user.uid, res.user.email, res.user.displayName || '');
+    beginUserSession(res.user);
     return res.user;
   };
 
@@ -322,6 +380,16 @@ export const AuthProvider = ({ children }) => {
 
   // Logout
   const logout = async () => {
+    profileFetchVersionRef.current += 1;
+    activeUidRef.current = null;
+    activeFetchUidRef.current = null;
+    profileReadyUidRef.current = null;
+    setCurrentUser(null);
+    setUserProfile(null);
+    setProfileStatus('idle');
+    setProfileError('');
+    setAuthLoading(false);
+
     if (isFirebaseConfigured && auth) {
       try {
         await signOut(auth);
@@ -329,11 +397,6 @@ export const AuthProvider = ({ children }) => {
         console.warn("Signout error:", e);
       }
     }
-    activeFetchUidRef.current = null;
-    setCurrentUser(null);
-    setUserProfile(null);
-    setProfileStatus('idle');
-    setProfileError('');
   };
 
   // Update Profile
@@ -368,7 +431,7 @@ export const AuthProvider = ({ children }) => {
       syncError = 'Firestore is not initialized. Profile changes are stored only on this device.';
       setProfileError(syncError);
     }
-    demoStorage.saveProfile(updated);
+    if (currentUser?.uid) demoStorage.saveProfile(currentUser.uid, updated);
     return { profile: updated, syncedToFirestore, syncError };
   };
 
