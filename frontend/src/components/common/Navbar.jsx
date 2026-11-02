@@ -101,7 +101,7 @@ export const Navbar = ({ publicOnly = false }) => {
                 )}
                 <Link
                   to="/login"
-                  className={`px-3.5 py-2 text-sm font-medium transition-colors ${
+                  className={`landing-public-login px-3.5 py-2 text-sm font-medium transition-colors ${
                     location.pathname === '/login'
                       ? 'text-indigo-600 font-semibold'
                       : 'text-slate-600 hover:text-slate-900'
@@ -111,7 +111,7 @@ export const Navbar = ({ publicOnly = false }) => {
                 </Link>
                 <Link
                   to="/signup"
-                  className="px-4 py-2 text-sm font-semibold text-white bg-indigo-600 hover:bg-indigo-700 rounded-xl shadow-xs transition-colors"
+                  className="landing-public-signup px-4 py-2 text-sm font-semibold text-white bg-indigo-600 hover:bg-indigo-700 rounded-xl shadow-xs transition-colors"
                 >
                   Get Started
                 </Link>
@@ -160,13 +160,13 @@ export const Navbar = ({ publicOnly = false }) => {
             <div className="md:hidden flex items-center gap-2">
               <Link
                 to="/login"
-                className="px-3 py-1.5 text-xs font-medium text-slate-700 hover:text-indigo-600"
+                className="landing-public-login px-3 py-1.5 text-xs font-medium text-slate-700 hover:text-indigo-600"
               >
                 Log In
               </Link>
               <Link
                 to="/signup"
-                className="px-3 py-1.5 text-xs font-semibold text-white bg-indigo-600 rounded-lg"
+                className="landing-public-signup px-3 py-1.5 text-xs font-semibold text-white bg-indigo-600 rounded-lg"
               >
                 Get Started
               </Link>
